@@ -36,6 +36,7 @@ for feature in points_geojson["features"]:
         "lon": longitude,
         "este": properties.get("ESTE"),
         "norte": properties.get("NORTE"),
+        "elev":properties.get("COTA")
     }
 )
 
@@ -56,7 +57,8 @@ def crear_lista(dataframe):
                 html.Br(),
                 html.Small(
                     f'NORTE: {row["norte"]:.4f},     '
-                    f'ESTE: {row["este"]:.4f}'
+                    f'ESTE: {row["este"]:.4f},    '
+                    f'ELEV.: {row["elev"]:.4f}    '
                 ),
             ],
             id={
@@ -90,7 +92,7 @@ def create_map(
     ]
 
     sizes = [
-        20 if point_id == selected_id else 11
+        15 if point_id == selected_id else 10
         for point_id in dataframe["id"]
     ]
 
@@ -99,6 +101,7 @@ def create_map(
             dataframe["id"],
             dataframe["este"].fillna(""),
             dataframe["norte"].fillna(""),
+            dataframe["elev"].fillna(""),
         ]
     )
 
@@ -116,7 +119,8 @@ def create_map(
             hovertemplate=(
                 "<b>%{text}</b><br>"
                 "ESTE: %{customdata[1]}<br>"
-                "NORTE: %{customdata[2]}"
+                "NORTE: %{customdata[2]}<br>"
+                "ELEV.: %{customdata[3]}"
                 "<extra></extra>"
             ),
         )
