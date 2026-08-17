@@ -1,5 +1,5 @@
 # app.py
-from dash import Dash, dcc, html, Input, Output,ctx, ALL
+from dash import Dash, dcc, html, Input, Output, ctx, ALL
 import dash_bootstrap_components as dbc
 import plotly.express as px
 import plotly.graph_objects as go
@@ -8,7 +8,45 @@ import geopandas as gpd
 import json
 import numpy as np
 import os
+from pyproj import CRS, Transformer
 
+# Load CSV
+df = pd.read_csv("puntos.csv")
+
+# Example: UTM Zone 33N, WGS84
+utm_crs = CRS.from_epsg(32617)   # change to your UTM EPSG
+wgs84 = CRS.from_epsg(4326)
+
+transformer = Transformer.from_crs(utm_crs, wgs84, always_xy=True)
+
+features = []
+
+for _, row in df.iterrows():
+    lon, lat = transformer.transform(row["ESTE"], row["NORTE"])
+
+    feature = {
+        "type": "Feature",
+        "geometry": {
+            "type": "Point",
+            "coordinates": [lon, lat],
+        },
+        "properties":{
+            "DESCRIPCIÓN":row["DESCRIPCIÓN"],
+            "NORTE":row['NORTE'],
+            'ESTE':row['ESTE'],
+            'ELEV':row['COTA'],
+            'id':row['N°']
+        }
+    }
+    features.append(feature)
+
+geojson = {
+    "type": "FeatureCollection",
+    "features": features
+}
+
+with open("points.geojson", "w") as f:
+    json.dump(geojson, f, indent=2)
 
 
 with open("points.geojson", "r", encoding="utf-8") as file:
@@ -36,12 +74,13 @@ for feature in points_geojson["features"]:
         "lon": longitude,
         "este": properties.get("ESTE"),
         "norte": properties.get("NORTE"),
-        "elev":properties.get("COTA")
+        "elev":properties.get("ELEV")
     }
 )
 
 
 df1 = pd.DataFrame(rows)
+print(df1)
 
 def crear_lista(dataframe):
     if dataframe.empty:
@@ -78,6 +117,8 @@ def create_map(
     center_lat=9.023826,
     center_lon=-79.531796,
     zoom=15,
+    show_grid=True,
+    grid_labels=True
 ):
     dataframe = dataframe.copy()
 
@@ -92,8 +133,13 @@ def create_map(
     ]
 
     sizes = [
-        15 if point_id == selected_id else 10
+        10 if point_id == selected_id else 5
         for point_id in dataframe["id"]
+    ]
+
+    markers = [
+        "square" if point_id == selected_id else "square-stroked"
+        for point_id in dataframe['id']
     ]
 
     customdata = np.column_stack(
@@ -140,7 +186,7 @@ def create_map(
 
     fig.update_layout(
         map={
-            "style": "open-street-map",
+            "style": "carto-voyager",
             "center": {
                 "lat": center_lat,
                 "lon": center_lon,
@@ -155,7 +201,6 @@ def create_map(
             "b": 0,
         },
     )
-
     return fig
 
 app = Dash(
@@ -166,8 +211,6 @@ app = Dash(
 )
 
 server = app.server
-
-df = pd.read_csv('puntos.csv')
 
 point_list = dbc.ListGroup([
     dbc.ListGroupItem([
@@ -183,6 +226,8 @@ point_list = dbc.ListGroup([
 
 app.layout = dbc.Container([
     html.H3("Puntos VLS-UTP"),
+    html.H4("ELIPSOIDE EGM08"),
+    html.H4('MARCO DE REFENCIA ITRF08'),
          dbc.Row(
             [
                 # Lista y buscador
@@ -241,6 +286,17 @@ app.layout = dbc.Container([
                 "margin": 0,
             },
         ),
+        html.Footer(
+            "Elaborado por Carlos Calderon, David Gaitán e Isaac López | Sitio por Daniel Madrid",
+              style={
+            "textAlign": "center",
+            "padding": "15px",
+            "marginTop": "20px",
+            "borderTop": "1px solid #ccc",
+            "color": "#666",
+            "fontSize": "14px",
+            },
+            )
     ],
     fluid=True,
     className="p-4",
@@ -257,7 +313,7 @@ app.layout = dbc.Container([
     ),
     prevent_initial_call=True,
 )
-def select_point(clicks):
+def select_point(selected_id):
     triggered_id = ctx.triggered_id
 
     if not triggered_id:
