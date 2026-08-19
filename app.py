@@ -9,33 +9,49 @@ import json
 import numpy as np
 import os
 from pyproj import CRS, Transformer
+import dash_leaflet as dl
+import urllib.parse
 
 # Load CSV
-df = pd.read_csv("puntos.csv")
+df = pd.read_csv("DATA/EDIF_FINAL.csv")
+
 
 # Example: UTM Zone 33N, WGS84
-utm_crs = CRS.from_epsg(32617)   # change to your UTM EPSG
-wgs84 = CRS.from_epsg(4326)
+def get_svg_shape(shape_type, size, color):
+    # Ensure minimum size
+    s = max(size, 12) 
+    
+    if shape_type == "triangle":
+        # Draws a triangle
+        return f'<svg width="{s}" height="{s}"><polygon points="{s/2},0 {s},{s} 0,{s}" fill="{color}" opacity="0.8" stroke="black" stroke-width="1"/></svg>'
+    elif shape_type == "square":
+        # Draws a square
+        return f'<svg width="{s}" height="{s}"><rect x="0" y="0" width="{s}" height="{s}" fill="{color}" opacity="0.8" stroke="black" stroke-width="1"/></svg>'
+    else:
+        # Defaults to a circle
+        return f'<svg width="{s}" height="{s}"><circle cx="{s/2}" cy="{s/2}" r="{s/2}" fill="{color}" opacity="0.8" stroke="black" stroke-width="1"/></svg>'
 
-transformer = Transformer.from_crs(utm_crs, wgs84, always_xy=True)
+
 
 features = []
 
 for _, row in df.iterrows():
-    lon, lat = transformer.transform(row["ESTE"], row["NORTE"])
+    lat = row['LATITUD']
+    lon = row['LONGITUD']
+
 
     feature = {
         "type": "Feature",
         "geometry": {
             "type": "Point",
-            "coordinates": [lon, lat],
+            "coordinates": [lat, lon],
         },
         "properties":{
-            "DESCRIPCIÓN":row["DESCRIPCIÓN"],
-            "NORTE":row['NORTE'],
-            'ESTE':row['ESTE'],
-            'ELEV':row['COTA'],
-            'id':row['N°']
+            "obs":row["OBS"],
+            "plantas":row['PLANTAS'],
+            'huella':row['HUELLA(M2)'],
+            'config':row['CONFIG'],
+            'edif':row['EDIF']
         }
     }
     features.append(feature)
@@ -45,42 +61,46 @@ geojson = {
     "features": features
 }
 
-with open("points.geojson", "w") as f:
+with open("edif.geojson", "w") as f:
     json.dump(geojson, f, indent=2)
 
 
-with open("points.geojson", "r", encoding="utf-8") as file:
-    points_geojson = json.load(file)
+with open("edif.geojson", "r", encoding="utf-8") as file:
+    edif_geojson = json.load(file)
 
 rows = []
 
-for feature in points_geojson["features"]:
+for feature in edif_geojson["features"]:
     properties = feature.get("properties", {})
     geometry = feature.get("geometry", {})
 
     if geometry.get("type") != "Point":
         continue
 
-    longitude, latitude = geometry["coordinates"][:2]
-
+    latitude, longitude = geometry["coordinates"][:2]
+#ROWS.APPEND
     rows.append(
-    {
-        "id": properties.get("N°", properties.get("id", "")),
-        "name": properties.get(
-            "name",
-            properties.get("DESCRIPCIÓN", "Sin nombre"),
-        ),
+        {
+        "EDIF": properties.get("edif"),
         "lat": latitude,
         "lon": longitude,
-        "este": properties.get("ESTE"),
-        "norte": properties.get("NORTE"),
-        "elev":properties.get("ELEV")
-    }
+        "PLANTAS": properties.get("plantas"),
+        "HUELLA": properties.get("huella"),
+        "CONFIG": properties.get('config'),
+        "OBS":properties.get("obs")
+        }
 )
 
 
 df1 = pd.DataFrame(rows)
 print(df1)
+
+df1=df1.dropna(subset=['lat','lon'])
+print(df1)
+
+
+
+
 
 def crear_lista(dataframe):
     if dataframe.empty:
@@ -92,17 +112,11 @@ def crear_lista(dataframe):
     return [
         dbc.ListGroupItem(
             [
-                html.Strong(row["name"]),
-                html.Br(),
-                html.Small(
-                    f'NORTE: {row["norte"]:.4f},     '
-                    f'ESTE: {row["este"]:.4f},    '
-                    f'ELEV.: {row["elev"]:.4f}    '
-                ),
+                html.Strong(row["EDIF"]),
             ],
             id={
                 "type": "point-item",
-                "index": str(row["id"]),
+                "index": str(row["EDIF"]),
             },
             n_clicks=0,
             action=True,
@@ -111,97 +125,136 @@ def crear_lista(dataframe):
         for _, row in dataframe.iterrows()
     ]
 
-def create_map(
-    dataframe,
-    selected_id=None,
-    center_lat=9.023826,
-    center_lon=-79.531796,
-    zoom=15,
-    show_grid=True,
-    grid_labels=True
-):
-    dataframe = dataframe.copy()
 
-    dataframe["id"] = dataframe["id"].astype(str).str.strip()
+def asignar_simbolo(valor):
+    if valor == 1:
+        return "Base"
+    elif valor == 2:
+        return "Azotea + Base"
+    elif valor ==3:
+        return "square"
+    else:
+        return "diamond"
+
+
+df1["symbol"] = df1["CONFIG"].apply(asignar_simbolo)
+print(df1)
+
+def create_map(dataframe, selected_id=None):
+    df_map = dataframe.copy()
+    df_map["EDIF"] = df_map["EDIF"].astype(str).str.strip()
+
+    # Center and Zoom logic
+    center_lat = df_map["lat"].mean()
+    center_lon = df_map["lon"].mean()
+    zoom = 13
 
     if selected_id is not None:
         selected_id = str(selected_id).strip()
-
-    colors = [
-        "blue" if point_id == selected_id else "red"
-        for point_id in dataframe["id"]
-    ]
-
-    sizes = [
-        10 if point_id == selected_id else 5
-        for point_id in dataframe["id"]
-    ]
-
-    markers = [
-        "square" if point_id == selected_id else "square-stroked"
-        for point_id in dataframe['id']
-    ]
-
-    customdata = np.column_stack(
-        [
-            dataframe["id"],
-            dataframe["este"].fillna(""),
-            dataframe["norte"].fillna(""),
-            dataframe["elev"].fillna(""),
-        ]
-    )
-
-    fig = go.Figure(
-        go.Scattermap(
-            lat=dataframe["lat"],
-            lon=dataframe["lon"],
-            mode="markers",
-            marker={
-                "size": sizes,
-                "color": colors,
-            },
-            text=dataframe["name"],
-            customdata=customdata,
-            hovertemplate=(
-                "<b>%{text}</b><br>"
-                "ESTE: %{customdata[1]}<br>"
-                "NORTE: %{customdata[2]}<br>"
-                "ELEV.: %{customdata[3]}"
-                "<extra></extra>"
-            ),
-        )
-    )
-
-    # Centrar el mapa en el punto seleccionado
-    if selected_id is not None:
-        selected_rows = dataframe[
-            dataframe["id"] == selected_id
-        ]
-
+        selected_rows = df_map[df_map["EDIF"] == selected_id]
         if not selected_rows.empty:
-            selected_row = selected_rows.iloc[0]
-            center_lat = float(selected_row["lat"])
-            center_lon = float(selected_row["lon"])
-            zoom = 17
+            center_lat = float(selected_rows.iloc[0]["lat"])
+            center_lon = float(selected_rows.iloc[0]["lon"])
+            zoom = 16
 
-    fig.update_layout(
-        map={
-            "style": "carto-voyager",
-            "center": {
-                "lat": center_lat,
-                "lon": center_lon,
-            },
-            "zoom": zoom,
-        },
-        height=600,
-        margin={
-            "r": 0,
-            "t": 0,
-            "l": 0,
-            "b": 0,
-        },
+    size_scaler = 20
+    markers = []
+
+    # SINGLE LOOP TO CREATE ALL MARKERS
+    for _, row in df_map.iterrows():
+        lat = row.get("lat")
+        lon = row.get("lon")
+        
+        # Skip rows with missing coordinates
+        if pd.isna(lat) or pd.isna(lon):
+            continue
+
+        lat = float(lat)
+        lon = float(lon)
+
+        # 1. Map CONFIG to numbers safely
+        raw_config = row.get("CONFIG")
+        if pd.isna(raw_config):
+            config_val = -1 
+        else:
+            config_val = int(float(raw_config)) 
+
+        color_map = {1: "#1f77b4", 2: "#ff7f0e", 3: "#2ca02c"}
+        shape_map = {1: "circle", 2: "triangle", 3: "square"}
+
+        color = color_map.get(config_val, "gray")
+        shape = shape_map.get(config_val, "circle")
+
+        # 2. Check if selected and determine size
+        edif_id = str(row.get("EDIF", ""))
+        if edif_id == selected_id:
+            color = "#d62728" # Red if selected
+            
+        huella = row.get("HUELLA")
+        if pd.isna(huella):
+            huella = 200 
+            
+        calculated_size = huella / size_scaler
+        final_size = calculated_size * 1.5 if edif_id == selected_id else calculated_size
+        final_size = max(15, final_size) # Minimum size of 15px
+
+        # 3. Create Tooltip Text
+        tooltip_text = (
+            f"Edificio: {edif_id} | "
+            f"Config: {config_val} | "
+            f"Plantas: {row.get('PLANTAS', 'N/A')} | "
+            f"Huella: {huella} m²"
+        )
+
+        # 4. GENERATE DYNAMIC SVG SHAPE (Inside the loop!)
+        r = (final_size / 2) - 1
+        c = final_size / 2
+        w = final_size - 2
+
+        if shape == "triangle":
+            svg_element = f'<polygon points="{c},1 {w+1},{w+1} 1,{w+1}" fill="{color}" stroke="black" stroke-width="1.5"/>'
+        elif shape == "square":
+            svg_element = f'<rect x="1" y="1" width="{w}" height="{w}" fill="{color}" stroke="black" stroke-width="1.5"/>'
+        else: 
+            svg_element = f'<circle cx="{c}" cy="{c}" r="{r}" fill="{color}" stroke="black" stroke-width="1.5"/>'
+
+        # Add viewBox and xmlns
+        svg_string = f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {final_size} {final_size}" width="{final_size}" height="{final_size}">{svg_element}</svg>'
+        
+        # URL-encode and add charset=UTF-8
+        encoded_svg = urllib.parse.quote(svg_string)
+        icon_url = f"data:image/svg+xml;charset=UTF-8,{encoded_svg}"
+
+        # 5. Create the Marker and APPEND IT
+        custom_icon = dl.Marker(
+            position=[lat, lon],
+            children=[dl.Tooltip(tooltip_text)],
+            icon=dict(
+                iconUrl=icon_url,
+                iconSize=[final_size, final_size], 
+                iconAnchor=[c, c],
+                className="" 
+            )
+        )
+        markers.append(custom_icon)
+
+    print(f"Created {len(markers)} markers")
+
+    # Return the Dash Leaflet Map component
+    return dl.Map(
+        center=[center_lat, center_lon],
+        zoom=zoom,
+        children=[
+            dl.TileLayer(), # Default is OpenStreetMap
+            dl.LayerGroup(markers)
+        ],
+        style={'width': '100%', 'height': '600px'}
     )
-    return fig
+
+
+
+config_options = [{"label": c, "value": c} for c in sorted(df["CONFIG"].dropna().unique())]
+
 
 app = Dash(
     __name__,
@@ -214,33 +267,27 @@ server = app.server
 
 point_list = dbc.ListGroup([
     dbc.ListGroupItem([
-        html.Strong(row["DESCRIPCIÓN"]),
+        html.Strong(row["EDIF"]),
         html.Br(),
         html.Small(
-            f"Lat: {row['NORTE']:.4f}, "
-            f"Lon: {row['ESTE']:.4f}, "
+            f"Lat: {row['LATITUD']:.4f}, "
+            f"Lon: {row['LONGITUD']:.4f}, "
         )
     ])
     for _, row in df.iterrows()
 ])
 
 app.layout = dbc.Container([
-    html.H3("Puntos VLS-UTP"),
-    html.H4("ELIPSOIDE EGM08"),
-    html.H4('MARCO DE REFENCIA ITRF08'),
+    html.H1("Edificios Instrumentados PINS",
+            style={
+                        "textAlign": "center",
+                        }),
+   
          dbc.Row(
             [
                 # Lista y buscador
                 dbc.Col(
                     [
-                        dbc.Input(
-                            id="search-bar",
-                            type="search",
-                            placeholder="Buscar punto...",
-                            debounce=True,
-                            className="mb-3",
-                        ),
-
                         dbc.ListGroup(
                             id="point-list",
                             children=crear_lista(df1),
@@ -254,7 +301,7 @@ app.layout = dbc.Container([
 
                         html.Div(id="selected-point"),
                     ],
-                    width=3,
+                    width=2,
                     style={
                         "minWidth": 0
                     },
@@ -263,17 +310,10 @@ app.layout = dbc.Container([
                 # Mapa
                 dbc.Col(
                     [
-                        dcc.Graph(
-                            id="map",
-                            figure=create_map(df1),
-                            style={
-                                "height": "600px",
-                                "width": "100%",
-                            },
-                            config={
-                                "responsive": True,
-                            },
-                        )
+                        html.Div([
+                           create_map(df1)
+                        ],
+                        id="map-container")
                     ],
                     width=8,
                     style={
@@ -287,7 +327,7 @@ app.layout = dbc.Container([
             },
         ),
         html.Footer(
-            "Elaborado por Carlos Calderon, David Gaitán e Isaac López | Sitio por Daniel Madrid",
+            "Elaborado por Grupo PINS-FIC",
               style={
             "textAlign": "center",
             "padding": "15px",
@@ -305,72 +345,50 @@ app.layout = dbc.Container([
 
 
 @app.callback(
-    Output("map", "figure"),
+    Output("map-container", "children"),
     Output("selected-point", "children"),
-    Input(
+     Input(
         {"type": "point-item", "index": ALL},
         "n_clicks",
     ),
     prevent_initial_call=True,
 )
-def select_point(selected_id):
+def select_point(n_clicks_list): # Changed parameter name to reflect what Dash actually sends
     triggered_id = ctx.triggered_id
 
     if not triggered_id:
         return (
-            create_map(df1),
-            "Seleccione una ubicación de la lista.",
+            create_map(df1), # Ensure this calls your Dash Leaflet map function
+            "Seleccione un Edificio de la lista.",
         )
 
-    selected_id = str(triggered_id["index"])
+    # Extract the actual ID from the trigger context
+    actual_selected_id = str(triggered_id["index"])
 
     selected_rows = df1[
-        df1["id"].astype(str) == selected_id
+        df1["EDIF"].astype(str) == actual_selected_id
     ]
 
     if selected_rows.empty:
         return (
-            create_map(df1),
-            "No se encontró la ubicación seleccionada.",
+            create_map(df1), # Ensure this calls your Dash Leaflet map function
+            "No se encontró el edificio seleccionado.",
         )
 
     selected_row = selected_rows.iloc[0]
 
     return (
-        create_map(df1, selected_id),
+        create_map(df1, actual_selected_id), # Ensure this calls your Dash Leaflet map function
         dbc.Alert(
             [
                 html.Strong(
-                    f'Seleccionado: {selected_row["name"]}'
+                    f'Seleccionado: {selected_row["EDIF"]}'
                 ),
-                html.Br(),
-                f'ID: {selected_row["id"]}',
             ],
             color="primary",
         ),
     )
 
-@app.callback(
-    Output("point-list", "children"),
-    Input("search-bar", "value"),
-)
-def update_point_list(search_text):
-    data = df1.copy()
-
-    search_text = (
-        str(search_text).strip().lower()
-        if search_text
-        else ""
-    )
-
-    if search_text:
-        data = data[
-            data["name"]
-            .str.lower()
-            .str.contains(search_text, na=False)
-        ]
-
-    return crear_lista(data)
 
 
 if __name__ == "__main__":
